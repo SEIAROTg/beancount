@@ -294,7 +294,7 @@ class TestInferTolerances(cmptest.TestCase):
         self.assertEqual({'USD': D('0.05')}, tolerances)
 
     @loader.load_doc(expect_errors=True)
-    def test_tolerances__ignore_price(self, entries, errors, options_map):
+    def test_tolerances__ignore_high_precision_price(self, entries, errors, options_map):
         """
         2014-02-25 *
           Assets:Account3       5 VHT @ 102.2340 USD
@@ -304,7 +304,7 @@ class TestInferTolerances(cmptest.TestCase):
         self.assertEqual({'USD': D('0.005')}, tolerances)
 
     @loader.load_doc(expect_errors=True)
-    def test_tolerances__ignore_cost(self, entries, errors, options_map):
+    def test_tolerances__ignore_high_precision_cost(self, entries, errors, options_map):
         """
         2014-02-25 *
           Assets:Account3       5 VHT {102.2340 USD}
@@ -315,7 +315,7 @@ class TestInferTolerances(cmptest.TestCase):
 
 
     @loader.load_doc(expect_errors=True)
-    def test_tolerances__ignore_cost_and_price(self, entries, errors, options_map):
+    def test_tolerances__ignore_high_precision_cost_and_price(self, entries, errors, options_map):
         """
         2014-02-25 *
           Assets:Account3       5 VHT {102.2340 USD} @ 103.45237239 USD
@@ -323,6 +323,46 @@ class TestInferTolerances(cmptest.TestCase):
         """
         tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
         self.assertEqual({'USD': D('0.005')}, tolerances)
+
+    @parser.parse_doc(allow_incomplete=True)
+    def test_tolerances__respect_price(self, entries, _, options_map):
+        """
+        2014-02-25 *
+          Assets:Account3       5.1111   VHT @ 102.2340 USD
+          Assets:Account4     -61.38     GBP @@
+        """
+        tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
+        self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.00005'), 'GBP': D('0.005')},
+                         tolerances)
+
+    @parser.parse_doc(allow_incomplete=True)
+    def test_tolerances__respect_cost(self, entries, _, options_map):
+        """
+        2014-02-25 *
+          Assets:Account3       5.1111   VHT {102.2340 USD}
+          Assets:Account4     -61.38     GBP @@
+        """
+        tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
+        self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.00005'), 'GBP': D('0.005')},
+                         tolerances)
+
+    @parser.parse_doc(allow_incomplete=True)
+    def test_tolerances__respect_cost_and_price(self, entries, _, options_map):
+        """
+        2014-02-25 *
+          Assets:Account3       5.1111   VHT {102.2340 USD} @ 103.45 USD
+          Assets:Account4     -61.38     GBP @@
+
+        2014-02-26 *
+          Assets:Account3       5.1111   VHT {102.23 USD} @ 103.4524 USD
+          Assets:Account4     -61.38     GBP @@
+        """
+        tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
+        self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.005'), 'GBP': D('0.005')},
+                         tolerances)
+        tolerances = interpolate.infer_tolerances(entries[1].postings, options_map)
+        self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.005'), 'GBP': D('0.005')},
+                         tolerances)
 
     @loader.load_doc(expect_errors=True)
     def test_tolerances__cost_and_number_ignored(self, entries, errors, options_map):
@@ -332,7 +372,7 @@ class TestInferTolerances(cmptest.TestCase):
           Assets:Account4      -511 USD
         """
         tolerances = interpolate.infer_tolerances(entries[-1].postings, options_map)
-        self.assertEqual({}, tolerances)
+        self.assertEqual({'USD': D('0.00005')}, tolerances)
 
     @loader.load_doc(expect_errors=True)
     def test_tolerances__number_on_cost_used(self, entries, _, options_map):
@@ -342,7 +382,7 @@ class TestInferTolerances(cmptest.TestCase):
           Assets:Account4      -511 USD
         """
         tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
-        self.assertEqual({'VHT': D('0.0005')}, tolerances)
+        self.assertEqual({'VHT': D('0.0005'), 'USD': D('0.00005')}, tolerances)
         tolerances = interpolate.infer_tolerances(entries[0].postings, options_map, True)
         self.assertEqual({'VHT': D('0.0005'), 'USD': D('0.051117')}, tolerances)
 
@@ -402,7 +442,7 @@ class TestInferTolerances(cmptest.TestCase):
           Assets:Account4
         """
         tolerances = interpolate.infer_tolerances(entries[0].postings, options_map)
-        self.assertEqual({'VHT': D('0.00005')},
+        self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.00005')},
                          tolerances)
         tolerances = interpolate.infer_tolerances(entries[0].postings, options_map, True)
         self.assertEqual({'VHT': D('0.00005'), 'USD': D('0.005111700')},
@@ -416,7 +456,7 @@ class TestInferTolerances(cmptest.TestCase):
           Assets:Account4
         """
         tolerances = interpolate.infer_tolerances(entries[-1].postings, options_map)
-        self.assertEqual({'VHT': D('0.05')},
+        self.assertEqual({'VHT': D('0.05'), 'USD': D('0.00005')},
                          tolerances)
         tolerances = interpolate.infer_tolerances(entries[-1].postings, options_map, True)
         self.assertEqual({'VHT': D('0.05'), 'USD': D('0.5')},

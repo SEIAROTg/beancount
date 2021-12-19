@@ -90,6 +90,31 @@ def compute_residual(postings):
     return inventory
 
 
+def _infer_base_tolerance(number):
+    """Infer the base tolerance from a beancount number.
+
+    The base tolerance is computed by setting the least significant digit on the
+    input number to 1 and all other digits to 0. Specially, if the input number
+    is an integer, the result shall be None.
+
+    This does NOT take into consideration the inferred_tolerance_multiplier option.
+
+    Args:
+      number: a beancount number (Decimal | Literal[beancount.core.number.MISSING] | None)
+
+    Returns:
+      The inferred base tolerance, or None if the input number is None, MISSING
+      or an integer.
+    """
+    if number is None or number is MISSING:
+        return None
+    expo = number.as_tuple().exponent
+    # Note: the exponent is a negative value.
+    if expo < 0:
+        return ONE.scaleb(expo)
+    return None
+
+
 def infer_tolerances(postings, options_map, use_cost=None):
     """Infer tolerances from a list of postings.
 
@@ -116,8 +141,8 @@ def infer_tolerances(postings, options_map, use_cost=None):
       0.01 * M = 0.005 (from the 1150.00 USD leg)
 
       The sum of
-        0.001 * M x 30.96 = 0.01548 +
-        0.001 * M x 30.96 = 0.01548
+        0.001 * M * 30.96 = 0.01548 +
+        0.001 * M * 30.96 = 0.01548
                           = 0.03096
 
     So the tolerance for USD in this case is max(0.005, 0.03096) = 0.03096. Prices
@@ -145,48 +170,62 @@ def infer_tolerances(postings, options_map, use_cost=None):
     default_tolerances = options_map["inferred_tolerance_default"]
     tolerances = default_tolerances.copy()
 
+    def update_tolerance(currency, base_tolerance):
+      if base_tolerance is not None:
+        tolerances[currency] = max(
+            base_tolerance * inferred_tolerance_multiplier,
+            tolerances.get(currency, -1024))
+
     cost_tolerances = collections.defaultdict(D)
     for posting in postings:
         # Skip the precision on automatically inferred postings.
         if posting.meta and AUTOMATIC_META in posting.meta:
             continue
-        units = posting.units
-        if not (isinstance(units, Amount) and isinstance(units.number, Decimal)):
+
+        if isinstance(posting.price, Amount):
+            base_tolerance = _infer_base_tolerance(posting.price.number)
+            update_tolerance(posting.price.currency, base_tolerance)
+
+        if isinstance(posting.cost, CostSpec):
+            base_tolerance = _infer_base_tolerance(posting.cost.number_per)
+            update_tolerance(posting.cost.currency, base_tolerance)
+
+            base_tolerance = _infer_base_tolerance(posting.cost.number_total)
+            update_tolerance(posting.cost.currency, base_tolerance)
+
+        if isinstance(posting.cost, Cost):
+            base_tolerance = _infer_base_tolerance(posting.cost.number)
+            update_tolerance(posting.cost.currency, base_tolerance)
+
+        if not isinstance(posting.units, Amount):
+            continue
+        base_tolerance = _infer_base_tolerance(posting.units.number)
+        update_tolerance(posting.units.currency, base_tolerance)
+        if base_tolerance is None or not use_cost:
             continue
 
-        # Compute bounds on the number.
-        currency = units.currency
-        expo = units.number.as_tuple().exponent
-        if expo < 0:
-            # Note: the exponent is a negative value.
-            tolerance = ONE.scaleb(expo) * inferred_tolerance_multiplier
-            tolerances[currency] = max(tolerance,
-                                       tolerances.get(currency, -1024))
+        # Compute bounds on the smallest digit of the number implied as cost.
+        tolerance = base_tolerance * inferred_tolerance_multiplier
+        cost = posting.cost
+        if cost is not None:
+            cost_currency = cost.currency
+            if isinstance(cost, Cost):
+                cost_tolerance = min(tolerance * cost.number, MAXIMUM_TOLERANCE)
+            else:
+                assert isinstance(cost, CostSpec)
+                cost_tolerance = MAXIMUM_TOLERANCE
+                for cost_number in cost.number_total, cost.number_per:
+                    if cost_number is None or cost_number is MISSING:
+                        continue
+                    cost_tolerance = min(tolerance * cost_number, cost_tolerance)
+            cost_tolerances[cost_currency] += cost_tolerance
 
-            if not use_cost:
-                continue
-
-            # Compute bounds on the smallest digit of the number implied as cost.
-            cost = posting.cost
-            if cost is not None:
-                cost_currency = cost.currency
-                if isinstance(cost, Cost):
-                    cost_tolerance = min(tolerance * cost.number, MAXIMUM_TOLERANCE)
-                else:
-                    assert isinstance(cost, CostSpec)
-                    cost_tolerance = MAXIMUM_TOLERANCE
-                    for cost_number in cost.number_total, cost.number_per:
-                        if cost_number is None or cost_number is MISSING:
-                            continue
-                        cost_tolerance = min(tolerance * cost_number, cost_tolerance)
-                cost_tolerances[cost_currency] += cost_tolerance
-
-            # Compute bounds on the smallest digit of the number implied as cost.
-            price = posting.price
-            if isinstance(price, Amount) and isinstance(price.number, Decimal):
-                price_currency = price.currency
-                price_tolerance = min(tolerance * price.number, MAXIMUM_TOLERANCE)
-                cost_tolerances[price_currency] += price_tolerance
+        # Compute bounds on the smallest digit of the number implied as cost.
+        price = posting.price
+        if isinstance(price, Amount) and isinstance(price.number, Decimal):
+            price_currency = price.currency
+            price_tolerance = min(tolerance * price.number, MAXIMUM_TOLERANCE)
+            cost_tolerances[price_currency] += price_tolerance
 
     for currency, tolerance in cost_tolerances.items():
         tolerances[currency] = max(tolerance, tolerances.get(currency, -1024))
